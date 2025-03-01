@@ -1,0 +1,153 @@
+import os
+import math
+from collections import defaultdict
+import nltk
+from nltk.tokenize import RegexpTokenizer
+from nltk.corpus import stopwords
+from nltk.stem.porter import PorterStemmer
+
+nltk.download('stopwords')
+
+corpusroot = './US_Inaugural_Addresses'
+tokenizer = RegexpTokenizer(r'[a-zA-Z]+')
+all_tokens = []
+
+for filename in os.listdir(corpusroot):
+    if filename.endswith('.txt'):
+        with open(os.path.join(corpusroot, filename), "r", encoding='windows-1252') as file:
+            doc = file.read().lower() #converting into lowercase
+            each_doc_tokens = tokenizer.tokenize(doc) #tokenising each doc 
+            all_tokens.append(each_doc_tokens)
+
+# stopword removal
+stop_words = set(stopwords.words('english'))
+filtered_tokens = [[word for word in doc if word not in stop_words] for doc in all_tokens]
+
+# stemming
+stemmer = PorterStemmer()
+stemmed_tokens = [[stemmer.stem(word) for word in doc] for doc in filtered_tokens]
+
+df = defaultdict(int)  # token: df value
+N = len(stemmed_tokens) # total number of docs in corpus
+
+#get the df value for each (unique) token in each document and make the df dictionary
+def getdf():
+    for doc in stemmed_tokens:
+        unique_tokens = set(doc)   # unique tokens per document = non repeated 
+        for token in unique_tokens:
+            df[token] += 1  # increase that token's df value by 1 cause it appeared in the current doc 
+    return df
+
+# compute term frequency (TF) 
+def gettf(doc):
+    tf = defaultdict(int)
+    for token in doc:
+        tf[token] += 1  # Count occurrences of each token
+
+    # Compute normalized TF using log scaling: TF = 1 + log10(frequency)
+    tf_normalized = {token: 1 + math.log10(freq) for token, freq in tf.items() if freq > 0}
+    
+    return tf_normalized
+
+# calculate the idf value for the given token
+def getidf(token):
+    token = stemmer.stem(token)  
+    if token not in df:
+        return -1
+    return math.log10(N / df[token])  
+
+
+# compute TF-IDF for a given document
+def gettfidf(doc):
+    tf = gettf(doc)  # Get term frequency for the document
+
+    # Compute TF-IDF using: TF-IDF = TF * IDF
+    tfidf = {token: tf[token] * getidf(token) for token in tf if getidf(token) > 0}
+
+    # Normalize the TF-IDF vector
+    norm = math.sqrt(sum(val**2 for val in tfidf.values()))
+    if norm != 0:
+        tfidf = {token: val / norm for token, val in tfidf.items()}
+
+    return tfidf
+
+def posting_list():
+    posting_list = defaultdict(list)  # term -> list of (doc_id, tf-idf weight)
+    
+    for doc_id, doc in enumerate(stemmed_tokens):
+        tfidf_scores = gettfidf(doc)  # Compute TF-IDF for the document
+        
+        for token, weight in tfidf_scores.items():
+            posting_list[token].append((doc_id, weight))  # Store (doc_id, weight)
+    
+    # Step 2: Sort each term's posting list in descending order of weight
+    for token in posting_list:
+        posting_list[token].sort(key=lambda x: x[1], reverse=True)  
+    
+    return posting_list  # Returns a dictionary {term: [(doc_id, weight), ...]}
+
+def get_top_10_docs(token, posting_list):
+    token = stemmer.stem(token)  # Ensure consistency with corpus preprocessing
+    
+    if token not in posting_list:
+        return []  # If token isn't in corpus, return empty list
+    
+    return posting_list[token][:10]  # Return top-10 (doc_id, weight) pairs
+
+# Compute cosine similarity using posting lists
+def compute_cosine_similarity(query, posting_list):
+    query_tokens = tokenizer.tokenize(query.lower())  # Tokenize query
+    query_tokens = [stemmer.stem(word) for word in query_tokens if word not in stop_words]  # Preprocess query
+
+    if not query_tokens:
+        return None  # If the query has no valid tokens, return None
+
+    # Compute query TF-IDF vector
+    query_tfidf = gettfidf(query_tokens)
+
+    # Step 1: Retrieve top-10 document lists for each query token
+    candidate_docs = defaultdict(int)  # doc_id -> count of times it appears in top-10
+    top_10_weights = {}  # token -> weight of 10th element in its posting list
+
+    for token in query_tokens:
+        top_docs = get_top_10_docs(token, posting_list)
+        
+        if top_docs:
+            top_10_weights[token] = top_docs[-1][1]  # Store 10th highest weight
+        
+        for doc_id, _ in top_docs:
+            candidate_docs[doc_id] += 1
+
+    # Step 2: Split query tokens into T1 and T2 for each document
+    actual_scores = {}  # doc_id -> actual similarity score
+    upper_bound_scores = {}  # doc_id -> upper-bound similarity score
+
+    for doc_id, count in candidate_docs.items():
+        # Identify T1 (tokens where doc_id is in the top-10) and T2 (tokens where it isn't)
+        T1 = [t for t in query_tokens if doc_id in dict(get_top_10_docs(t, posting_list))]
+        T2 = [t for t in query_tokens if t not in T1]
+
+        # Compute actual similarity sim(q, d)
+        actual_sim = sum(query_tfidf[t] * dict(get_top_10_docs(t, posting_list)).get(doc_id, 0) for t in T1)
+        actual_scores[doc_id] = actual_sim
+
+        # Compute upper-bound similarity overline{sim(q,d)}
+        upper_bound_sim = actual_sim + sum(query_tfidf[t] * top_10_weights[t] for t in T2 if t in top_10_weights)
+        upper_bound_scores[doc_id] = upper_bound_sim
+
+    # Step 3: Select the best document
+    best_doc = None
+    best_score = -float("inf")
+
+    for doc_id in actual_scores:
+        actual = actual_scores[doc_id]
+        upper_bound = upper_bound_scores[doc_id]
+
+        # If this doc's actual score is better than all other actual/upper-bound scores, return it
+        if actual >= max(actual_scores.values(), default=0) and actual >= max(upper_bound_scores.values(), default=0):
+            best_doc = doc_id
+            best_score = actual
+
+    return best_doc, best_score  # Returns the document with highest cosine similarity
+
+
