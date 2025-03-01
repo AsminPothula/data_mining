@@ -119,7 +119,6 @@ def query(qstring):
     return (global_filenames[best_doc_id], candidate_docs[best_doc_id])
 
 def main():
-    """Main function to process corpus and handle queries."""
     global N, tf_idf_vectors, global_filenames
     
     # read and preprocess all .txt files
@@ -141,6 +140,7 @@ def main():
     result = query(query_string)
     print(f"Best matching document in the corpus: {result[0]}, Score: {result[1]}")
 
+    print("--------------")
     print("%.12f" % getidf('british'))
     print("%.12f" % getidf('union'))
     print("%.12f" % getidf('dollar'))
@@ -158,6 +158,7 @@ def main():
     print("(%s, %.12f)" % query("public rights"))
     print("(%s, %.12f)" % query("people government"))
     print("(%s, %.12f)" % query("states laws"))
+    print("--------------")
     
 if __name__ == "__main__":
     main()
